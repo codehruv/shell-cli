@@ -3,10 +3,9 @@
 
 import openai
 from openai import OpenAI
-import os
-
 import sys
 import os
+import json
 import configparser
 import re
 import psutil
@@ -151,13 +150,20 @@ if __name__ == '__main__':
         # get the response from codex
         response = client.chat.completions.create(
             model=config['engine'],
-            messages=[{"role":"user", "content":codex_query}],
+            messages=[
+                {"role":"system", "content":"Only respond to the user with a JSON containing the predicted command with key `command`"},
+                {"role":"user", "content":codex_query}
+            ],
             temperature=config['temperature'],
             max_tokens=config['max_tokens'],
+            response_format={"type":"json_object"},
             stop="#"
         )
 
         completion_all = response.choices[0].message.content
+        completion_all = json.loads(completion_all)
+        completion_all = completion_all['command']
+        completion_all = "\n\n" + completion_all
 
         print(completion_all)
 
@@ -173,7 +179,5 @@ if __name__ == '__main__':
         print(e)
     except openai.APIConnectionError:
         print('\n\n# Codex CLI error: API connection error, are you connected to the internet?')
-    except openai.InvalidRequestError as e:
-        print('\n\n# Codex CLI error: Invalid request - ' + str(e))
     except Exception as e:
         print('\n\n# Codex CLI error: Unexpected exception - ' + str(e))

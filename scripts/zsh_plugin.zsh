@@ -6,7 +6,9 @@
 create_completion() {
     # Get the text typed until now.
     text=${BUFFER}
-    completion=$(echo -n "$text" | $CODEX_CLI_PATH/src/codex_query.py)
+    # Also add the previous 2 commands and their output to the text.
+    extra_text=$(fc -l -2 -1 | awk '{print $2}' | tac | xargs -I {} echo -n "{} ") 
+    completion=$(echo -n "$aliases\n\n$extra_text\n\n$text" | $CODEX_CLI_PATH/src/codex_query.py)
     # Add completion to the current buffer.
     BUFFER="${text}${completion}"
     # Put the cursor at the end of the line.
