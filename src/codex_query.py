@@ -2,6 +2,9 @@
 # -*- coding: utf-8 -*-
 
 import openai
+from openai import OpenAI
+import os
+
 import sys
 import os
 import configparser
@@ -25,7 +28,7 @@ DEBUG_MODE = False
 API_KEYS_LOCATION = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'openaiapirc')
 
 PROMPT_CONTEXT = Path(__file__).with_name('current_context.txt')
-
+client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 
 # Read the secret_key from the ini file ~/.config/openaiapirc
 # The format is:
@@ -51,15 +54,18 @@ def initialize():
     Initialize openAI and shell mode
     """
     global ENGINE
+    global client
 
     # Check if file at API_KEYS_LOCATION exists
     create_template_ini_file()
     config = configparser.ConfigParser()
     config.read(API_KEYS_LOCATION)
 
-    openai.api_key = config['openai']['secret_key'].strip('"').strip("'")
-    openai.organization = config['openai']['organization_id'].strip('"').strip("'")
+    # TODO: The 'openai.organization' option isn't read in the client API. You will need to pass it when you instantiate the client, e.g. 'OpenAI(organization=config['openai']['organization_id'].strip('"').strip("'"))'
+    # openai.organization = config['openai']['organization_id'].strip('"').strip("'")
     ENGINE = config['openai']['engine'].strip('"').strip("'")
+    API_KEY = config['openai']['secret_key'].strip('"').strip("'")
+    client = OpenAI(api_key=API_KEY)
 
     prompt_config = {
         'engine': ENGINE,
@@ -69,66 +75,8 @@ def initialize():
         'multi_turn': MULTI_TURN,
         'token_count': 0
     }
-    
+
     return PromptFile(PROMPT_CONTEXT.name, prompt_config)
-
-def is_sensitive_content(content):
-    """
-    Check if the content contains sensitive content
-    Refer to https://beta.openai.com/docs/engines/content-filter for explanation
-    """
-
-    if len(content) == 0:
-        return False
-    
-    response = openai.Completion.create(
-        engine="content-filter-alpha",
-        prompt = "<|endoftext|>"+content+"\n--\nLabel:",
-        temperature=0,
-        max_tokens=1,
-        top_p=0,
-        logprobs=10
-        )
-    
-    output_label = response["choices"][0]["text"]
-
-    # This is the probability at which we evaluate that a "2" is likely real
-    # vs. should be discarded as a false positive
-    toxic_threshold = -0.355
-
-    if output_label == "2":
-        # If the model returns "2", return its confidence in 2 or other output-labels
-        logprobs = response["choices"][0]["logprobs"]["top_logprobs"][0]
-
-        # If the model is not sufficiently confident in "2",
-        # choose the most probable of "0" or "1"
-        # Guaranteed to have a confidence for 2 since this was the selected token.
-        if logprobs["2"] < toxic_threshold:
-            logprob_0 = logprobs.get("0", None)
-            logprob_1 = logprobs.get("1", None)
-
-            # If both "0" and "1" have probabilities, set the output label
-            # to whichever is most probable
-            if logprob_0 is not None and logprob_1 is not None:
-                if logprob_0 >= logprob_1:
-                    output_label = "0"
-                else:
-                    output_label = "1"
-            # If only one of them is found, set output label to that one
-            elif logprob_0 is not None:
-                output_label = "0"
-            elif logprob_1 is not None:
-                output_label = "1"
-
-            # If neither "0" or "1" are available, stick with "2"
-            # by leaving output_label unchanged.
-
-        # if the most probable token is none of "0", "1", or "2"
-        # this should be set as unsafe
-        if output_label not in ["0", "1", "2"]:
-            output_label = "2"
-
-    return (output_label != "0")
 
 def get_query(prompt_file):
     """
@@ -174,7 +122,7 @@ if __name__ == '__main__':
 
     try:
         user_query, prompt_file = get_query(prompt_file)
-        
+
         config = prompt_file.config if prompt_file else {
             'engine': ENGINE,
             'temperature': TEMPERATURE,
@@ -201,27 +149,31 @@ if __name__ == '__main__':
         codex_query = prefix + prompt_file.read_prompt_file(user_query) + user_query
 
         # get the response from codex
-        response = openai.Completion.create(engine=config['engine'], prompt=codex_query, temperature=config['temperature'], max_tokens=config['max_tokens'], stop="#")
+        response = client.chat.completions.create(
+            model=config['engine'],
+            messages=[{"role":"user", "content":codex_query}],
+            temperature=config['temperature'],
+            max_tokens=config['max_tokens'],
+            stop="#"
+        )
 
-        completion_all = response['choices'][0]['text']
+        completion_all = response.choices[0].message.content
 
-        if is_sensitive_content(user_query + '\n' + completion_all):
-            print("\n#   Sensitive content detected, response has been redacted")
-        else:
-            print(completion_all)
+        print(completion_all)
 
-            # append output to prompt context file
-            if config['multi_turn'] == "on":
-                if completion_all != "" or len(completion_all) > 0:
-                    prompt_file.add_input_output_pair(user_query, completion_all)
-        
+        # append output to prompt context file
+        if config['multi_turn'] == "on":
+            if completion_all != "" or len(completion_all) > 0:
+                prompt_file.add_input_output_pair(user_query, completion_all)
+
     except FileNotFoundError:
         print('\n\n# Codex CLI error: Prompt file not found, try again')
-    except openai.error.RateLimitError:
+    except openai.RateLimitError as e:
         print('\n\n# Codex CLI error: Rate limit exceeded, try later')
-    except openai.error.APIConnectionError:
+        print(e)
+    except openai.APIConnectionError:
         print('\n\n# Codex CLI error: API connection error, are you connected to the internet?')
-    except openai.error.InvalidRequestError as e:
+    except openai.InvalidRequestError as e:
         print('\n\n# Codex CLI error: Invalid request - ' + str(e))
     except Exception as e:
         print('\n\n# Codex CLI error: Unexpected exception - ' + str(e))
